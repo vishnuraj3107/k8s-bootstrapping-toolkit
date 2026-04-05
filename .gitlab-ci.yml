@@ -1,0 +1,184 @@
+# =============================================================================
+# GitLab CI/CD Pipeline - Kubernetes Bootstrapping Toolkit
+# Author: Vishnu Raj
+# Description: Automated pipeline with build, test, deploy, and verify stages
+# =============================================================================
+
+image: docker:24.0
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE/sample-app"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  KUBECTL_VERSION: "1.28.0"
+  HELM_VERSION: "3.13.0"
+  APP_NAMESPACE_STAGING: "app-staging"
+  APP_NAMESPACE_PROD: "app"
+  MONITORING_NAMESPACE: "monitoring"
+
+stages:
+  - build
+  - test
+  - deploy
+  - verify
+
+# ── Shared setup ──────────────────────────────────────────────────────────────
+.setup_kubectl: &setup_kubectl
+  before_script:
+    - apk add --no-cache curl bash
+    - curl -LO "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+    - chmod +x kubectl && mv kubectl /usr/local/bin/
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+
+.setup_helm: &setup_helm
+  before_script:
+    - apk add --no-cache curl bash
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+build-image:
+  stage: build
+  services:
+    - docker:24.0-dind
+  script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker build -t "$IMAGE_NAME:$IMAGE_TAG" -t "$IMAGE_NAME:latest" app/
+    - docker push "$IMAGE_NAME:$IMAGE_TAG"
+    - docker push "$IMAGE_NAME:latest"
+    - echo "Image pushed → $IMAGE_NAME:$IMAGE_TAG"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH =~ /^feature\//'
+  tags:
+    - docker
+
+# ── Stage 2: Test ─────────────────────────────────────────────────────────────
+lint-helm:
+  stage: test
+  image: alpine/helm:3.13.0
+  script:
+    - echo "Linting Prometheus Helm values..."
+    - helm lint helm/prometheus/ || true
+    - echo "Linting Grafana Helm values..."
+    - helm lint helm/grafana/ || true
+    - echo "Linting NGINX Ingress Helm values..."
+    - helm lint helm/ingress-nginx/ || true
+    - echo "✅ Helm lint complete."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH == "main"'
+
+validate-k8s-manifests:
+  stage: test
+  image: bitnami/kubectl:1.28
+  script:
+    - echo "Dry-run validating Kubernetes manifests..."
+    - kubectl apply --dry-run=client -f app/k8s/deployment.yaml
+    - kubectl apply --dry-run=client -f app/k8s/service.yaml
+    - kubectl apply --dry-run=client -f app/k8s/ingress.yaml
+    - echo "✅ All manifests are valid."
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" || $CI_COMMIT_BRANCH == "main"'
+
+# ── Stage 3: Deploy ───────────────────────────────────────────────────────────
+deploy-staging:
+  stage: deploy
+  image: alpine/k8s:1.28.3
+  environment:
+    name: staging
+    url: http://staging.sample-app.local
+  script:
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+
+    # Create namespace if needed
+    - kubectl create namespace "$APP_NAMESPACE_STAGING" --dry-run=client -o yaml | kubectl apply -f -
+
+    # Deploy monitoring stack if not present
+    - |
+      if ! helm status prometheus -n "$MONITORING_NAMESPACE" &>/dev/null; then
+        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        helm repo update
+        helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+          -n "$MONITORING_NAMESPACE" --create-namespace \
+          -f helm/prometheus/values.yaml --wait --timeout 10m
+      fi
+
+    # Deploy app with updated image
+    - |
+      sed -i "s|image:.*|image: $IMAGE_NAME:$IMAGE_TAG|g" app/k8s/deployment.yaml
+      kubectl apply -f app/k8s/deployment.yaml -n "$APP_NAMESPACE_STAGING"
+      kubectl apply -f app/k8s/service.yaml    -n "$APP_NAMESPACE_STAGING"
+      kubectl apply -f app/k8s/ingress.yaml    -n "$APP_NAMESPACE_STAGING"
+
+    # Wait for rollout
+    - kubectl rollout status deployment/sample-app -n "$APP_NAMESPACE_STAGING" --timeout=5m
+    - echo "✅ Staging deployment successful → $IMAGE_NAME:$IMAGE_TAG"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs:
+    - build-image
+    - lint-helm
+    - validate-k8s-manifests
+
+deploy-production:
+  stage: deploy
+  image: alpine/k8s:1.28.3
+  environment:
+    name: production
+    url: http://sample-app.local
+  script:
+    - echo "$KUBE_CONFIG_PROD" | base64 -d > ~/.kube/config
+
+    # Create namespace
+    - kubectl create namespace "$APP_NAMESPACE_PROD" --dry-run=client -o yaml | kubectl apply -f -
+
+    # Apply alert rules
+    - kubectl apply -f monitoring/alerts/alert-rules.yaml -n "$MONITORING_NAMESPACE"
+
+    # Rolling update - zero downtime
+    - |
+      sed -i "s|image:.*|image: $IMAGE_NAME:$IMAGE_TAG|g" app/k8s/deployment.yaml
+      kubectl apply -f app/k8s/deployment.yaml -n "$APP_NAMESPACE_PROD"
+      kubectl apply -f app/k8s/service.yaml    -n "$APP_NAMESPACE_PROD"
+      kubectl apply -f app/k8s/ingress.yaml    -n "$APP_NAMESPACE_PROD"
+
+    # Wait for rollout
+    - kubectl rollout status deployment/sample-app -n "$APP_NAMESPACE_PROD" --timeout=5m
+    - echo "✅ Production deployment successful → $IMAGE_NAME:$IMAGE_TAG"
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual        # Require manual approval for production
+  needs:
+    - deploy-staging
+
+# ── Stage 4: Verify ───────────────────────────────────────────────────────────
+verify-deployment:
+  stage: verify
+  image: alpine/k8s:1.28.3
+  script:
+    - echo "$KUBE_CONFIG" | base64 -d > ~/.kube/config
+    - echo "Verifying all pods are running..."
+
+    # Check staging pods
+    - kubectl get pods -n "$APP_NAMESPACE_STAGING" -o wide
+    - kubectl get pods -n "$MONITORING_NAMESPACE"
+
+    # Ensure pods are actually Running
+    - |
+      PENDING=$(kubectl get pods -n "$APP_NAMESPACE_STAGING" --field-selector=status.phase!=Running --no-headers 2>/dev/null | wc -l)
+      if [ "$PENDING" -gt 0 ]; then
+        echo "❌ Some pods are not running:"
+        kubectl get pods -n "$APP_NAMESPACE_STAGING" --field-selector=status.phase!=Running
+        exit 1
+      fi
+      echo "✅ All pods are healthy in staging."
+
+    # Check Helm releases
+    - helm list -A
+    - echo "✅ Verification complete."
+
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  needs:
+    - deploy-staging

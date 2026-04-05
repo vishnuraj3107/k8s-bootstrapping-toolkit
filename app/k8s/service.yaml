@@ -1,0 +1,24 @@
+# =============================================================================
+# Kubernetes Service - Sample Application
+# Author: Vishnu Raj
+# =============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: app
+  labels:
+    app: sample-app
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5000"
+spec:
+  selector:
+    app: sample-app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: ClusterIP

@@ -1,0 +1,43 @@
+# Kubernetes
+*.kubeconfig
+kubeconfig
+.kube/
+
+# Secrets & credentials
+*.env
+.env*
+secrets/
+*-secret.yaml
+*-secrets.yaml
+
+# Helm
+charts/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Terraform (if added later)
+.terraform/
+*.tfstate
+*.tfstate.backup

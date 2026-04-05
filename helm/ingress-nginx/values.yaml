@@ -1,0 +1,53 @@
+# =============================================================================
+# NGINX Ingress Controller - Custom Helm Values
+# Author: Vishnu Raj
+# =============================================================================
+
+controller:
+  replicaCount: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+  # Enable Prometheus metrics
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: monitoring
+
+  # Config for NGINX
+  config:
+    use-forwarded-headers: "true"
+    proxy-body-size: "10m"
+    proxy-connect-timeout: "15"
+    proxy-read-timeout: "600"
+    proxy-send-timeout: "600"
+    # Enable access logs
+    access-log-path: "/var/log/nginx/access.log"
+    error-log-path: "/var/log/nginx/error.log"
+
+  # Service type - LoadBalancer for cloud, NodePort for Minikube
+  service:
+    type: NodePort    # Change to LoadBalancer on AWS/GCP/Azure
+
+  # Pod disruption budget
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # Affinity for HA in production
+  affinity: {}
+
+# Default backend
+defaultBackend:
+  enabled: true
+  resources:
+    requests:
+      cpu: 10m
+      memory: 20Mi

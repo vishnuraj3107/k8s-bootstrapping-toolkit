@@ -1,0 +1,81 @@
+# =============================================================================
+# Grafana - Custom Helm Values
+# Author: Vishnu Raj
+# =============================================================================
+
+replicas: 1
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 300m
+    memory: 256Mi
+
+# Persistence
+persistence:
+  enabled: true
+  size: 2Gi
+
+# Admin credentials (overridden via --set in bootstrap.sh)
+adminUser: admin
+adminPassword: admin123
+
+# Datasources - auto-configure Prometheus
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-kube-prometheus-prometheus.monitoring:9090
+        access: proxy
+        isDefault: true
+        editable: true
+
+# Pre-load dashboards from configmaps
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: 'Kubernetes'
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# Import community dashboards by ID
+dashboards:
+  default:
+    # Kubernetes Cluster Overview - Community Dashboard
+    kubernetes-cluster:
+      gnetId: 7249
+      revision: 1
+      datasource: Prometheus
+    # Node Exporter Full
+    node-exporter:
+      gnetId: 1860
+      revision: 37
+      datasource: Prometheus
+    # Pod resource usage
+    pod-resources:
+      gnetId: 6336
+      revision: 1
+      datasource: Prometheus
+
+# Grafana.ini settings
+grafana.ini:
+  server:
+    root_url: "%(protocol)s://%(domain)s/grafana"
+  auth.anonymous:
+    enabled: false
+  analytics:
+    reporting_enabled: false

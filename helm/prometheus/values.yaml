@@ -1,0 +1,66 @@
+# =============================================================================
+# Prometheus Stack - Custom Helm Values
+# Author: Vishnu Raj
+# =============================================================================
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    retentionSize: "5GB"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 400Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    # Scrape all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+  service:
+    type: ClusterIP
+
+# Alertmanager configuration
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'default'
+    receivers:
+      - name: 'default'
+        # Add webhook/slack/email config here for real notifications
+
+# Node Exporter
+nodeExporter:
+  enabled: true
+
+# Kube State Metrics
+kubeStateMetrics:
+  enabled: true
+
+# Grafana - disabled here as we deploy it separately
+grafana:
+  enabled: false
+
+# Default scrape interval
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 30s
+    evaluationInterval: 30s
